@@ -5,7 +5,13 @@ import json
 from typing import Optional
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(__file__))
+if os.environ.get('DATA_DIR'):
+    DATA_DIR = os.environ.get('DATA_DIR')
+elif os.name == 'nt':  # Windows
+    DATA_DIR = os.path.dirname(__file__)
+else:  # Linux/Mac (cloud)
+    DATA_DIR = '/tmp'
+
 DB_PATH = os.path.join(DATA_DIR, 'expenses.db')
 CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), 'categories.json')
 
