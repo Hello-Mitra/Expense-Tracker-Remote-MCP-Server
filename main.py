@@ -30,13 +30,20 @@ def init_db():
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     date        TEXT    NOT NULL,
                     amount      REAL    NOT NULL,
+                    quantity    REAL    NOT NULL DEFAULT 1,
                     category    TEXT    NOT NULL,
                     subcategory TEXT    DEFAULT '',
                     note        TEXT    DEFAULT ''
                 )
             ''')
+            # migrate existing table if quantity column missing
+            try:
+                c.execute("ALTER TABLE expenses ADD COLUMN quantity REAL NOT NULL DEFAULT 1")
+                print("✅ Migrated: added quantity column")
+            except sqlite3.OperationalError:
+                pass  # column already exists
             # test write access
-            c.execute("INSERT OR IGNORE INTO expenses(date, amount, category) VALUES ('test', 0, 'test')")
+            c.execute("INSERT OR IGNORE INTO expenses(date, amount, quantity, category) VALUES ('test', 0, 1, 'test')")
             c.execute("DELETE FROM expenses WHERE category = 'test'")
             print(f"✅ Database ready at {DB_PATH}")
     except Exception as e:
@@ -49,15 +56,29 @@ init_db()
 
 @mcp.tool()
 def add_expense(date: str, amount: float, category: str,
-                subcategory: str = '', note: str = '') -> dict:
-    """Add a new expense entry to the database"""
+                quantity: float = 1, subcategory: str = '',
+                note: str = '') -> dict:
+    """
+    Add a new expense entry to the database.
+    amount = price per unit
+    quantity = number of units (default 1)
+    total = amount * quantity (calculated automatically)
+    """
     try:
+        total = amount * quantity
         with sqlite3.connect(DB_PATH) as c:
             cur = c.execute(
-                "INSERT INTO expenses (date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
-                (date, amount, category, subcategory, note)
+                "INSERT INTO expenses (date, amount, quantity, category, subcategory, note) VALUES (?,?,?,?,?,?)",
+                (date, amount, quantity, category, subcategory, note)
             )
-        return {"status": "success", "id": cur.lastrowid, "message": "Expense added successfully"}
+        return {
+            "status": "success",
+            "id": cur.lastrowid,
+            "amount_per_unit": amount,
+            "quantity": quantity,
+            "total": total,
+            "message": "Expense added successfully"
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -68,7 +89,9 @@ def get_expenses(start_date: str, end_date: str) -> list:
     try:
         with sqlite3.connect(DB_PATH) as c:
             cur = c.execute('''
-                SELECT id, date, amount, category, subcategory, note
+                SELECT id, date, amount, quantity,
+                       ROUND(amount * quantity, 2) AS total,
+                       category, subcategory, note
                 FROM expenses
                 WHERE date BETWEEN ? AND ?
                 ORDER BY date DESC, id DESC
@@ -137,18 +160,19 @@ def delete_expense(
 
 
 @mcp.tool()
-def summarize_expenses(start_date: str, end_date: str,
+def summarize_by_category(start_date: str, end_date: str,
                        category: Optional[str] = None) -> list:
     """Summarize total expenses by category within an inclusive date range"""
     try:
         with sqlite3.connect(DB_PATH) as c:
             query = '''
                 SELECT category,
-                       SUM(amount)  AS total_amount,
-                       COUNT(*)     AS total_count,
-                       AVG(amount)  AS avg_amount,
-                       MIN(amount)  AS min_amount,
-                       MAX(amount)  AS max_amount
+                       SUM(amount * quantity)   AS total_amount,
+                       SUM(quantity)            AS total_quantity,
+                       COUNT(*)                 AS total_count,
+                       AVG(amount * quantity)   AS avg_amount,
+                       MIN(amount * quantity)   AS min_amount,
+                       MAX(amount * quantity)   AS max_amount
                 FROM expenses
                 WHERE date BETWEEN ? AND ?
             '''
@@ -176,11 +200,12 @@ def summarize_by_subcategory(start_date: str, end_date: str,
             query = '''
                 SELECT category,
                        subcategory,
-                       SUM(amount)  AS total_amount,
-                       COUNT(*)     AS total_count,
-                       AVG(amount)  AS avg_amount,
-                       MIN(amount)  AS min_amount,
-                       MAX(amount)  AS max_amount
+                       SUM(amount * quantity)   AS total_amount,
+                       SUM(quantity)            AS total_quantity,
+                       COUNT(*)                 AS total_count,
+                       AVG(amount * quantity)   AS avg_amount,
+                       MIN(amount * quantity)   AS min_amount,
+                       MAX(amount * quantity)   AS max_amount
                 FROM expenses
                 WHERE date BETWEEN ? AND ?
             '''
@@ -220,10 +245,11 @@ def summarize_by_date(start_date: str, end_date: str,
 
         with sqlite3.connect(DB_PATH) as c:
             query = f'''
-                SELECT strftime('{fmt}', date) AS period,
-                       SUM(amount)             AS total_amount,
-                       COUNT(*)                AS total_count,
-                       AVG(amount)             AS avg_amount
+                SELECT strftime('{fmt}', date)  AS period,
+                       SUM(amount * quantity)   AS total_amount,
+                       SUM(quantity)            AS total_quantity,
+                       COUNT(*)                 AS total_count,
+                       AVG(amount * quantity)   AS avg_amount
                 FROM expenses
                 WHERE date BETWEEN ? AND ?
                 GROUP BY period
@@ -244,7 +270,9 @@ def get_top_expenses(start_date: str, end_date: str,
     try:
         with sqlite3.connect(DB_PATH) as c:
             query = '''
-                SELECT id, date, amount, category, subcategory, note
+                SELECT id, date, amount, quantity,
+                       ROUND(amount * quantity, 2) AS total,
+                       category, subcategory, note
                 FROM expenses
                 WHERE date BETWEEN ? AND ?
             '''
@@ -254,7 +282,7 @@ def get_top_expenses(start_date: str, end_date: str,
                 query += " AND category = ?"
                 params.append(category)
 
-            query += " ORDER BY amount DESC LIMIT ?"
+            query += " ORDER BY (amount * quantity) DESC LIMIT ?"
             params.append(limit)
 
             cur = c.execute(query, params)
